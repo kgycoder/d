@@ -683,7 +683,7 @@ function _beatCards() {
     return out;
 }
 
-let _npMeshTick = 0;
+let _npMeshTick = 0, _npMeshDebt = 0;
 let _lastNpGlow = '', _lastNpCol = '', _npIdleTick = 0, _beatDirty = false, _vbList = null;
 let _vbCol = '', _vbMoved = false;
 function updateNpColor() {
@@ -703,8 +703,18 @@ function updateNpColor() {
 
     if (npOpen && S.playing) {
         // 메시는 매우 느리게 움직이므로 20Hz → 10Hz 로 그려도 동일하게 보인다 (CPU/발열 절반)
-        if ((_npMeshTick++ & 1) === 0) renderNpMesh(beat, en, 2);
-        else _lerpMeshColors();
+        if ((_npMeshTick++ & 1) === 0) {
+            // Lyrics View 에서 가사를 넘기는 중 / 줄 이동·재생 UI 전환 애니메이션이 도는 동안에는 전체화면 배경
+            // (캔버스 업로드 + blur 필터 재합성)을 다시 그리지 않는다. 건너뛴 만큼은 steps 로 한 번에 따라잡아
+            // 움직임 속도는 그대로이고, 무거운 작업만 애니메이션 구간 밖으로 밀린다(최대 20스텝까지만 누적).
+            if (LV.active && performance.now() < LV.busyUntil) {
+                if (_npMeshDebt < 20) _npMeshDebt += 2;
+                _lerpMeshColors();
+            } else {
+                renderNpMesh(beat, en, 2 + _npMeshDebt);
+                _npMeshDebt = 0;
+            }
+        } else _lerpMeshColors();
         const pulse = document.getElementById('np-pulse');
         if (pulse) {
             pulse.style.background = glow;
@@ -3772,48 +3782,150 @@ function _clearLyrics() {
 ════════════════════════════════════════════ */
 /* cls: 상태 클래스(active/prev/near)가 붙어 있는 줄 인덱스 — 전체 줄을 훑지 않고 이 줄들만 되돌린다
    open: Secondary 공간이 열려 있는 줄 / anim: 공간 높이가 아직 전환 중인 줄 / pad: 스크롤 영역 padding-top 캐시 */
-const LV = { active: false, cls: [], open: new Set(), anim: new Set(), pad: -1, uiTimer: 0, uiHold: false };
-const LV_ANCHOR = 0.32;          // 현재 줄이 가사 영역 위에서 차지하는 세로 위치 (0.5 = 정중앙, Apple Music 처럼 위쪽 정렬)
+const LV = {
+    active: false, cls: [], open: new Set(), anim: new Set(), pad: -1,
+    uiTimer: 0, uiHold: false, holdAt: 0,      // 재생 UI 자동 숨김 타이머 / 조작 중(숨김 보류) 표시
+    busyUntil: 0,                              // 이 시각까지는 "가사 이동·UI 전환 애니메이션 구간" → 무거운 배경 갱신을 미룬다
+    navHidden: false,                          // 네이티브 네비게이션 바를 숨겨 달라고 요청한 상태
+    closing: false, swTimer: 0                 // 상단 쓸어내리기로 닫는 중
+};
+const LV_ANCHOR = 0.27;          // 현재 줄이 가사 영역 위에서 차지하는 세로 위치 (0.5 = 정중앙, Apple Music 처럼 위쪽 정렬)
+                                 // (가사 영역이 화면 맨 아래까지 늘어난 만큼 이전 0.32 보다 비율을 낮춰, 화면상 위치가 이전보다 약 20px 위가 되게 맞춤)
 const LV_UI_IDLE_MS = 3500;      // 이 시간 동안 상호작용이 없으면 재생 UI 를 숨긴다
+const LV_UI_FADE_MS = 480;       // 숨김/표시 전환(CSS .42s)이 끝나기까지
+const LV_UP_PX = 16;             // 손가락이 가장 아래로 내려간 지점에서 이만큼 위로 올라오면 "위로 스크롤" 제스처
+const LV_SWIPE_CLOSE_PX = 110;   // 상단을 이만큼 이상 쓸어내리면 닫힘
+const LV_SWIPE_CLOSE_V = 0.6;    // 또는 이 속도(px/ms)로 빠르게 쓸어내리면(36px 이상) 닫힘
+const LV_HOLD_STALE_MS = 8000;   // 터치 종료 이벤트가 유실돼도 UI 가 영원히 붙잡히지 않게 하는 안전장치
+
+/* ── 네이티브 네비게이션 바: 재생 UI 와 함께 숨기고/보인다 (상태가 바뀔 때만 브리지 호출) ── */
+function _lvNav(hidden) {
+    if (LV.navHidden === hidden) return;
+    LV.navHidden = hidden;
+    post('navbar', { hidden });
+}
 
 /* ── 재생 UI(재생바/재생·일시정지/이전·다음) 자동 숨김 ──────────────────
-   · 숨김/표시는 #np-lv 의 .ui-hide 클래스 하나로 처리 (opacity/transform 전환만 — 레이아웃 변화 없음)
-   · 다시 나타나는 제스처: "탭"(이동 10px 이하, 0.5초 이하). 가사를 위/아래로 끄는 드래그·플링은 제스처로 보지 않는다.
-   · 컨트롤을 만지고 있는 동안(재생바 드래그 포함)은 숨기지 않고, 손을 뗀 뒤부터 다시 센다. */
+   · 숨김/표시는 #np-lv 의 .ui-hide 클래스 하나로 처리 (opacity/transform/mask 전환만 — 레이아웃 변화 없음)
+   · 숨겨지면 가사가 화면 끝까지 보이고(그 뒤에 가려져 있던 가사가 드러남), 안드로이드 네비게이션 바도 같이 숨긴다.
+   · 다시 나타나는 제스처: "위로 스크롤" — 가사를 위로 끌어올리는 손가락 움직임(가장 아래 지점에서 LV_UP_PX 이상 위로).
+     아래로 끄는 스크롤·탭으로는 나타나지 않는다.
+   · 손가락이 화면에 닿아 있는 동안(재생바 드래그 포함)은 숨기지 않고, 손을 뗀 뒤부터 다시 센다. */
 function _lvUiArm() {
     clearTimeout(LV.uiTimer);
-    if (LV.active) LV.uiTimer = setTimeout(_lvUiHide, LV_UI_IDLE_MS);
+    LV.uiTimer = LV.active ? setTimeout(_lvUiHide, LV_UI_IDLE_MS) : 0;
 }
 function _lvUiHide() {
-    if (!LV.active || LV.uiHold) return;
-    document.getElementById('np-lv')?.classList.add('ui-hide');
+    LV.uiTimer = 0;
+    if (!LV.active || LV.closing) return;
+    if (LV.uiHold) {
+        if (performance.now() - LV.holdAt < LV_HOLD_STALE_MS) { _lvUiArm(); return; }   // 조작 중 → 손을 뗄 때까지 보류
+        LV.uiHold = false;
+    }
+    const root = document.getElementById('np-lv');
+    if (!root || root.classList.contains('ui-hide')) return;
+    LV.busyUntil = performance.now() + LV_UI_FADE_MS;
+    root.classList.add('ui-hide');
+    _lvNav(true);
 }
 function _lvUiShow() {
-    document.getElementById('np-lv')?.classList.remove('ui-hide');
+    const root = document.getElementById('np-lv');
+    if (root && root.classList.contains('ui-hide')) {
+        LV.busyUntil = performance.now() + LV_UI_FADE_MS;
+        root.classList.remove('ui-hide');
+    }
+    _lvNav(false);
     _lvUiArm();
 }
+
+/* 상단 쓸어내리기로 건 인라인 transform/opacity/transition 을 걷어내고 상태를 초기화 */
+function _lvSwipeReset() {
+    clearTimeout(LV.swTimer); LV.swTimer = 0; LV.closing = false;
+    const r = document.getElementById('np-lv');
+    if (r) { r.style.transition = ''; r.style.transform = ''; r.style.opacity = ''; }
+}
+
+/* 터치 제스처 (루트에 한 번만, 전부 passive):
+   ① 위로 스크롤 → 재생 UI 복귀
+   ② 곡 정보 영역(화면 맨 위)에서 시작한 아래로 쓸기 → 손가락을 따라 내려가다 놓으면 닫힘/복귀
+   touchmove 는 비교 몇 번만 하고, ②의 화면 반영은 프레임당 한 번(rAF)만 한다. */
 function _lvUiInit() {
     const root = document.getElementById('np-lv');
     if (!root || root._uiInit) return;
     root._uiInit = true;
-    const bottom = root.querySelector('.np-lv-bottom');
-    let sx = 0, sy = 0, st = 0, tracking = false;
-    root.addEventListener('pointerdown', e => {
-        sx = e.clientX; sy = e.clientY; st = performance.now(); tracking = true;
-        if (bottom && bottom.contains(e.target) && !root.classList.contains('ui-hide')) {
-            LV.uiHold = true; clearTimeout(LV.uiTimer);          // 컨트롤 조작 중에는 숨기지 않음
+    const head = root.querySelector('.np-lv-track');
+    let mode = 0;                       // 0: 없음 / 1: 가사·UI 위 드래그 / 2: 곡 정보 영역에서 시작
+    let sx = 0, sy = 0, lowY = 0, lastY = 0, lastT = 0, vy = 0, swDy = 0, swRaf = 0, upDone = false;
+
+    const swPaint = () => {
+        swRaf = 0;
+        root.style.transform = `translate3d(0, ${swDy}px, 0)`;
+        root.style.opacity = String(1 - Math.min(swDy / 380, 0.6));
+    };
+    const finish = cancelled => {
+        if (LV.uiHold) { LV.uiHold = false; if (!root.classList.contains('ui-hide')) _lvUiArm(); }
+        if (!mode) return;
+        const m = mode; mode = 0;
+        LV.busyUntil = performance.now() + 1500;                 // 손을 뗀 뒤 관성 스크롤 동안도 무거운 배경 갱신을 미룬다
+        if (m !== 2) return;
+        if (swRaf) { cancelAnimationFrame(swRaf); swRaf = 0; }
+        if (swDy <= 0) return;                                   // 쓸어내리지 않은 단순 터치
+        if (performance.now() - lastT > 100) vy = 0;             // 멈춘 채 놓으면 속도 0
+        const close = !cancelled && (swDy > LV_SWIPE_CLOSE_PX || (vy > LV_SWIPE_CLOSE_V && swDy > 36));
+        root.style.transition = 'transform .26s var(--ease), opacity .26s var(--ease)';
+        if (close) {
+            LV.closing = true;
+            root.style.transform = `translate3d(0, ${Math.round(innerHeight * 0.3)}px, 0)`;
+            root.style.opacity = '0';
+            LV.swTimer = setTimeout(closeLyricsView, 250);
+        } else {
+            root.style.transform = '';
+            root.style.opacity = '';
+            LV.swTimer = setTimeout(_lvSwipeReset, 300);
+        }
+    };
+
+    root.addEventListener('touchstart', e => {
+        if (LV.closing) return;
+        if (e.touches.length > 1) {                              // 멀티터치: 진행 중이던 쓸어내리기는 취소
+            if (mode === 2 && swDy > 0) { if (swRaf) { cancelAnimationFrame(swRaf); swRaf = 0; } _lvSwipeReset(); }
+            mode = 0; return;
+        }
+        if (LV.swTimer) _lvSwipeReset();                         // 복귀 애니메이션 중 다시 잡으면 즉시 제자리
+        const t = e.touches[0];
+        sx = t.clientX; sy = lowY = lastY = t.clientY; lastT = performance.now(); vy = 0; swDy = 0; upDone = false;
+        if (!root.classList.contains('ui-hide')) {                // 컨트롤/가사를 만지는 동안에는 숨기지 않음
+            LV.uiHold = true; LV.holdAt = lastT; clearTimeout(LV.uiTimer); LV.uiTimer = 0;
+        }
+        mode = (head && sy <= head.getBoundingClientRect().bottom) ? 2 : 1;
+    }, { passive: true });
+
+    root.addEventListener('touchmove', e => {
+        if (!mode || e.touches.length > 1) return;
+        const t = e.touches[0], y = t.clientY, now = performance.now();
+        const dt = now - lastT;
+        if (dt > 0) vy = 0.7 * (y - lastY) / dt + 0.3 * vy;
+        lastY = y; lastT = now;
+        LV.busyUntil = now + 250;                                // 드래그 중에는 무거운 배경 갱신을 미룬다
+        if (y > lowY) lowY = y;                                  // 손가락이 가장 아래로 내려간 지점
+        if (!upDone && lowY - y > LV_UP_PX) {                    // 거기서 위로 올라오면 = "위로 스크롤"
+            upDone = true;
+            if (root.classList.contains('ui-hide')) {
+                LV.uiHold = true; LV.holdAt = now;               // 이 제스처가 끝날 때까지는 다시 숨기지 않는다
+                _lvUiShow();
+            }
+        }
+        if (mode === 2) {
+            const dy = y - sy;
+            if (dy > 0 && dy > Math.abs(t.clientX - sx)) {       // 세로로 아래를 향한 움직임만
+                swDy = dy;
+                if (!swRaf) swRaf = requestAnimationFrame(swPaint);
+            }
         }
     }, { passive: true });
-    const end = (e, cancelled) => {
-        if (LV.uiHold) { LV.uiHold = false; _lvUiArm(); }
-        if (!tracking) return;
-        tracking = false;
-        if (cancelled) return;                                     // 브라우저가 제스처를 가져감(스크롤/드래그)
-        if (Math.hypot(e.clientX - sx, e.clientY - sy) > 10 || performance.now() - st > 500) return;   // 드래그·롱프레스는 제외
-        if (root.classList.contains('ui-hide')) _lvUiShow(); else _lvUiArm();
-    };
-    root.addEventListener('pointerup', e => end(e, false), { passive: true });
-    root.addEventListener('pointercancel', e => end(e, true), { passive: true });
+
+    root.addEventListener('touchend', () => finish(false), { passive: true });
+    root.addEventListener('touchcancel', () => finish(true), { passive: true });
 }
 function _lvReset() { LV.cls = []; LV.open.clear(); LV.anim.clear(); LV.pad = -1; }
 
@@ -3825,7 +3937,9 @@ function toggleLyricsView() {
 function openLyricsView() {
     if (!LY.lines.length) { toast('가사가 없어요'); return; }
     if (NP_LS.active) return; // 가로모드 전체화면 중에는 사용하지 않음
+    _lvSwipeReset();          // 쓸어내리기로 닫힌 직후 남아 있을 수 있는 인라인 상태 정리
     LV.active = true;
+    LV.busyUntil = performance.now() + 700;   // 열림 애니메이션 구간
     document.getElementById('np')?.classList.add('lyrics-view');
     document.getElementById('np-lv-btn')?.classList.add('on');
     const t = S.track;
@@ -3845,10 +3959,12 @@ function openLyricsView() {
 }
 
 function closeLyricsView() {
-    if (!LV.active) return;
+    if (!LV.active) { _lvSwipeReset(); return; }
     LV.active = false;
-    clearTimeout(LV.uiTimer); LV.uiHold = false;
+    clearTimeout(LV.uiTimer); LV.uiTimer = 0; LV.uiHold = false; LV.busyUntil = 0;
     document.getElementById('np-lv')?.classList.remove('ui-hide');
+    _lvSwipeReset();
+    _lvNav(false);            // 숨겨 두었던 안드로이드 네비게이션 바 복원
     document.getElementById('np')?.classList.remove('lyrics-view');
     document.getElementById('np-lv-btn')?.classList.remove('on');
     if (LY._lvScrollSpring) LY._lvScrollSpring.stop();
@@ -4009,7 +4125,10 @@ function _highlightLvLine(idx, instant) {
             _applyLineSpread('el_lv_wrap', idx, Math.max(-20, Math.min(20, vel * -0.055)));
         };
         if (instant) LY._lvScrollSpring.jump(target, applyFrame);
-        else if (!scroll._browsing) LY._lvScrollSpring.to(target, applyFrame);
+        else if (!scroll._browsing) {
+            LV.busyUntil = Math.max(LV.busyUntil, performance.now() + 700);   // 줄 이동 스프링이 도는 동안(약 0.5s)
+            LY._lvScrollSpring.to(target, applyFrame);
+        }
     }
     if (instant) requestAnimationFrame(() => inner.classList.remove('lv-snap'));
 }
@@ -4525,6 +4644,7 @@ function setGreet() {
         h < 6 ? '좋은 새벽이에요' : h < 12 ? '좋은 아침이에요' : h < 18 ? '좋은 오후예요' : h < 22 ? '좋은 저녁이에요' : '좋은 밤이에요';
 }
 setGreet();
+post('navbar', { hidden: false });   // (재)로드 시 네이티브에 남아 있을 수 있는 네비게이션 바 숨김 상태 초기화 (Lyrics View 가 숨겨 둔 경우)
 updateBarVisibility();
 renderFavSide();
 if ('mediaSession' in navigator) {

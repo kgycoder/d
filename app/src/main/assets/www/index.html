@@ -524,16 +524,8 @@
         </div>
 
         <!-- ▌APPLE MUSIC 스타일 가사 전용 화면 (Lyrics View) ▐ -->
+        <!-- 나가기: 상단(곡 정보 영역)을 아래로 쓸어내리거나 시스템 뒤로가기. 별도 닫기 버튼은 없다. -->
         <div class="np-lv" id="np-lv">
-            <div class="np-lv-top">
-                <button class="np-lv-close" id="np-lv-close" onclick="closeLyricsView()" aria-label="가사 화면 닫기">
-                    <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="rgba(255,255,255,.85)"
-                        stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <polyline points="3,5.5 7.5,10 12,5.5" />
-                    </svg>
-                </button>
-            </div>
-
             <div class="np-lv-track">
                 <div class="np-lv-art-shell">
                     <img id="np-lv-art" src="" alt="">
@@ -550,7 +542,8 @@
                 </div>
             </div>
 
-            <div class="np-lv-bottom">
+            <!-- 재생 UI(System UI): 일정 시간 조작이 없으면 부드럽게 사라지고, 위로 스크롤하면 다시 나타난다 -->
+            <div class="np-lv-bottom" id="np-lv-bottom">
                 <div class="np-prog-wrap">
                     <div class="np-pb" id="np-lv-pb">
                         <div class="np-pf" id="np-lv-pf"></div>

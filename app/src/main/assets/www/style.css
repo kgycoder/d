@@ -5111,7 +5111,10 @@ button, a, div, span, input {
     display: flex;
     opacity: 1;
     pointer-events: auto;
-    animation: npLvIn .42s var(--ease) both;
+    /* fill-mode 를 두지 않는다: 'both' 는 종료 후에도 애니메이션 값이 인라인 style 보다 우선해,
+       상단 쓸어내리기(나가기) 제스처가 .np-lv 에 거는 transform/opacity 를 무시하게 만든다.
+       종료 키프레임이 기본 상태(opacity 1 / transform none)와 같으므로 보이는 결과는 동일하다. */
+    animation: npLvIn .42s var(--ease);
 }
 
 /* Lyrics View가 열려 있을 땐 앨범 아트/컨트롤 패널/상단 버튼들을 숨겨
@@ -5128,50 +5131,27 @@ button, a, div, span, input {
     to   { opacity: 1; transform: none; }
 }
 
-/* 상단 바: 닫기 버튼만 (좌측) */
-.np-lv-top {
-    flex-shrink: 0;
-    display: flex;
-    align-items: center;
-    padding: calc(var(--safe-top) + 14px) 20px 4px;
-    position: relative;
-    z-index: 5;
-}
-
-.np-lv-close {
-    flex-shrink: 0;
-    width: 34px;
-    height: 34px;
-    border-radius: 50%;
-    background: rgba(255,255,255,0.12);
-    backdrop-filter: blur(24px);
-    border: 1px solid rgba(255,255,255,0.14);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background .15s, transform .15s;
-    -webkit-tap-highlight-color: transparent;
-}
-.np-lv-close:active { transform: scale(0.9); background: rgba(255,255,255,0.22); }
-
-/* 트랙 정보 줄: 좌측 작은 앨범 카드 + 곡명/가수 (Apple Music Lyrics View 구조) */
+/* 트랙 정보 줄: 좌측 앨범 카드 + 곡명/가수 (Apple Music Lyrics View 구조)
+   - 상단 닫기 버튼은 없다. 이 영역(상태바 포함 화면 맨 위)을 아래로 쓸어내리면 Lyrics View 가 닫힌다
+     (제스처는 app.js 의 _lvUiInit 이 처리). 이 영역에서는 브라우저 제스처를 쓰지 않도록 touch-action 을 끈다. */
 .np-lv-track {
     flex-shrink: 0;
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 10px 24px 14px;
+    gap: 14px;
+    padding: calc(var(--safe-top) + 20px) 24px 14px;
     position: relative;
     z-index: 5;
+    touch-action: none;
 }
 
 .np-lv-art-shell {
     flex-shrink: 0;
-    width: 44px;
-    height: 44px;
-    border-radius: 6px;
+    width: 56px;
+    height: 56px;
+    border-radius: 8px;
     overflow: hidden;
-    box-shadow: 0 6px 18px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.08);
+    box-shadow: 0 8px 22px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.08);
 }
 #np-lv-art {
     width: 100%;
@@ -5186,31 +5166,43 @@ button, a, div, span, input {
     text-align: left;
 }
 .np-lv-title {
-    font-size: 15px;
+    font-size: 16.5px;
     font-weight: 700;
     color: rgba(255,255,255,0.94);
-    letter-spacing: -.2px;
+    letter-spacing: -.25px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 .np-lv-ch {
-    font-size: 12px;
+    font-size: 13.5px;
     color: rgba(255,255,255,0.52);
-    margin-top: 2px;
+    margin-top: 3px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
-/* 가사 영역: 화면 대부분을 차지 */
+/* 가사 영역: 곡 정보 아래부터 "화면 맨 아래"까지 (재생 UI 는 이 위에 겹쳐 놓인다).
+   → 재생 UI 가 사라지면 그 뒤에 가려져 있던 가사가 그대로 드러난다. */
 .np-lv-lyrics {
     flex: 1;
     min-height: 0;
     position: relative;
 }
 
+/* 재생 UI 가 가사를 가리는 높이(--lv-cover).
+   · UI 가 있을 때: 재생 UI 높이(약 105px) + 하단 안전영역 + 여유 → 그 아래 가사는 완전히 투명(가려짐)
+   · UI 가 사라지면(.ui-hide): 0 → 가사가 화면 끝까지 보이고, 맨 끝 44px 만 부드럽게 옅어진다
+   @property 로 등록해 두어 값이 transition 으로 부드럽게 변한다(미지원 WebView 에서는 즉시 전환되는 것으로 대체). */
+@property --lv-cover {
+    syntax: '<length>';
+    inherits: false;
+    initial-value: 150px;
+}
+
 .np-lv-scroll {
+    --lv-cover: calc(var(--safe-bot) + 118px);
     height: 100%;
     overflow-y: hidden;   /* 네이티브 스크롤 대신 JS 스프링이 구동 (기존 방식과 동일) */
     overflow-x: hidden;
@@ -5218,9 +5210,13 @@ button, a, div, span, input {
     box-sizing: border-box;
     position: relative;
     scroll-behavior: auto;
-    -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 14%, black 86%, transparent 100%);
-    mask-image: linear-gradient(to bottom, transparent 0%, black 14%, black 86%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 64px,
+        #000 calc(100% - var(--lv-cover) - 44px), transparent calc(100% - var(--lv-cover)));
+    mask-image: linear-gradient(to bottom, transparent 0, #000 64px,
+        #000 calc(100% - var(--lv-cover) - 44px), transparent calc(100% - var(--lv-cover)));
+    transition: --lv-cover .42s var(--ease);
 }
+.np-lv.ui-hide .np-lv-scroll { --lv-cover: 0px; }
 
 .np-lv-inner {
     position: relative;
@@ -5272,13 +5268,30 @@ button, a, div, span, input {
     padding: 60px 24px 0;
 }
 
-/* 하단: 최소한의 재생 컨트롤만 (Apple Music처럼 불필요한 요소는 숨김) */
+/* 하단: 최소한의 재생 컨트롤만 (Apple Music처럼 불필요한 요소는 숨김)
+   가사 위에 겹쳐 놓이는 오버레이. 숨김은 opacity/transform 전환 + visibility 로만 처리한다(레이아웃 변화 없음).
+   숨겨진 동안에는 visibility:hidden 이라 터치를 받지 않고(가사 스크롤/탭이 그대로 통과) 레이어도 그려지지 않는다. */
 .np-lv-bottom {
-    flex-shrink: 0;
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 6;
     padding: 10px 30px calc(var(--safe-bot) + 22px);
     display: flex;
     flex-direction: column;
     gap: 18px;
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+    visibility: visible;
+    transition: opacity .42s var(--ease), transform .42s var(--ease), visibility 0s linear 0s;
+}
+.np-lv.ui-hide .np-lv-bottom {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0);
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity .42s var(--ease), transform .42s var(--ease), visibility 0s linear .42s;
 }
 
 .np-lv-ctrl {
@@ -5293,6 +5306,7 @@ button, a, div, span, input {
 
 @media (prefers-reduced-motion: reduce) {
     .np-lv-inner { transition: none !important; }
+    .np-lv-bottom, .np-lv.ui-hide .np-lv-bottom, .np-lv-scroll { transition: none !important; }
 }
 
 

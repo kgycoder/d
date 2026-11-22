@@ -89,6 +89,7 @@
      *  문서 스크롤 구조에서는 NP 위에서 가사를 드래그하면 뒤의 문서가 같이 스크롤되며(네이티브 스크롤바 노출 +
      *  제스처 충돌) 가사 패널의 부드러운 드래그를 방해했다. */
     const npEl = $('np');
+    const OVERLAY_ON = '#pl-ctx-menu.on,#pl-dialog-overlay.on,#pl-confirm-overlay.on,#pl-add-modal-overlay.on';
     function syncNpLock() {
         if (npEl) document.documentElement.classList.toggle('np-open', npEl.classList.contains('on'));
     }
@@ -104,8 +105,12 @@
             st.nav = { r: box(nav.getBoundingClientRect()), active: Math.max(0, btns.findIndex(b => b.classList.contains('on'))) };
         }
 
-        /* 검색 캡슐 (현재 활성 뷰) */
-        const wrap = document.querySelector('.view.on .mob-srch-wrap');
+        /* 검색 캡슐 (현재 활성 뷰)
+           Now Playing(전체화면, 불투명)이 열려 있고 그 위에 뜬 다이얼로그/메뉴도 없으면 캡슐은 반드시 가려져 있다 →
+           exposed() 의 getBoundingClientRect + elementFromPoint(강제 레이아웃·히트 테스트)를 통째로 건너뛴다.
+           (결과는 동일: 가려져 있으면 st.search 가 없다) */
+        const wrap = (npEl && npEl.classList.contains('on') && !document.querySelector(OVERLAY_ON))
+            ? null : document.querySelector('.view.on .mob-srch-wrap');
         if (wrap && exposed(wrap)) {
             const inp = wrap.querySelector('.srch-inp');
             if (inp) {
@@ -261,7 +266,15 @@
     const BEAT_FX = '.card, #vizz, #np-pulse, #np-particles, .c-now-bar';
     ['input', 'focusin', 'focusout', 'transitionend', 'animationend']
         .forEach(ev => document.addEventListener(ev, e => {
-            if ((ev === 'transitionend' || ev === 'animationend') && e.target && e.target.closest && e.target.closest(BEAT_FX)) return;
+            if (ev === 'transitionend' || ev === 'animationend') {
+                const t = e.target;
+                if (t && t.closest && t.closest(BEAT_FX)) return;
+                /* Now Playing 내부(가사 줄 색/필터 전환, 재생 UI 페이드 등)의 전환 종료는 네이티브 글래스 레이아웃과 무관하다.
+                   가사가 바뀔 때마다 이 이벤트가 여러 번 발생하는데, 그때마다 kick() → 300ms 동안 프레임마다
+                   collect()(강제 레이아웃/히트 테스트)+JSON 이 돌아 애니메이션 도중 프레임을 깎았다.
+                   #np 자신(열림/닫힘 애니메이션)의 종료는 그대로 반응한다. */
+                if (t && t !== npEl && npEl && npEl.contains(t)) return;
+            }
             kick(300);
         }, { capture: true, passive: true }));
     setInterval(() => {            // 안전망 (프로그램적 value 변경 등 이벤트 없는 변화) — 변화 없으면 전송 안 함
