@@ -366,6 +366,10 @@ public class MainActivity extends AppCompatActivity {
                     case "orientation":
                         String orient = msg.optString("value", "sensor");
                         runOnUiThread(() -> setOrientation(orient)); break;
+                    case "navbar":
+                        // Lyrics View: 재생 UI 가 사라질 때 안드로이드 네비게이션 바도 함께 숨기고, 다시 나타나면 복원
+                        final boolean hideNav = msg.optBoolean("hidden", false);
+                        runOnUiThread(() -> setNavBarHidden(hideNav)); break;
                     default: break;
                 }
             } catch (JSONException e) {
@@ -442,6 +446,46 @@ public class MainActivity extends AppCompatActivity {
                     | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
                     | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
         }
+    }
+
+    // ── Lyrics View: 네비게이션 바만 숨김/표시 (상태바는 그대로) ──────────────────
+    // 앱은 이미 edge-to-edge 라 바를 숨겨도 창/WebView 크기가 바뀌지 않는다(레이아웃 흔들림 없음).
+    // 사용자가 화면 가장자리를 쓸면 일시적으로 다시 나타났다가 자동으로 숨겨진다(BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE / IMMERSIVE_STICKY).
+    private boolean navBarHidden = false;
+
+    private void setNavBarHidden(boolean hide) {
+        if (navBarHidden == hide) return;
+        navBarHidden = hide;
+        applyNavBarState();
+    }
+
+    private void applyNavBarState() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            WindowInsetsController c = getWindow().getInsetsController();
+            if (c == null) return;
+            if (navBarHidden) {
+                c.setSystemBarsBehavior(
+                        WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                c.hide(WindowInsets.Type.navigationBars());
+            } else {
+                c.show(WindowInsets.Type.navigationBars());
+            }
+        } else {
+            int base = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
+            //noinspection deprecation
+            getWindow().getDecorView().setSystemUiVisibility(navBarHidden
+                    ? base | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    : base);
+        }
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        // 알림창/다른 앱을 다녀오면 시스템이 숨긴 바를 되돌려 놓는 경우가 있어, 숨김 상태였다면 다시 적용한다
+        if (hasFocus && navBarHidden) applyNavBarState();
     }
 
     private void doSearch(JSONObject msg) {
